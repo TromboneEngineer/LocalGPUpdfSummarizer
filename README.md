@@ -10,6 +10,8 @@ All dependencies, including a fresh compilation of `llama.cpp`, are wrapped into
 
 No GPU is technically required, thanks to CPU offloading handled by `llama.cpp`. This script has been tested and successfully can run in CPU only mode (prioritizing scientific trustworthiness over speed, expecting longer run times without GPU acceleration).
 
+If Pixi is not already installed, see documentation at: https://pixi.prefix.dev/latest/installation/
+
 To run locally, the `[tasks]` section of `pixi.toml` allows for several `llama.cpp` building commands. Assuming a 2 computer configuration with an Ethernet connection specifically featuring a GTX 970 GPU and a GTX 1050 notebook GPU, a singular commit/version of `llama.cpp` must be stated (under `LLAMA_COMMIT` in `pixi.toml`). The already chosen commit can be tested, or a newer version is likely to be supported as well. The following command sequence is recommended (at least for similar or identical hardware as stated above):
 
 ```
