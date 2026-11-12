@@ -1,0 +1,92 @@
+[workspace]
+channels = ["conda-forge"]
+name = "pdf-sum-gpu"
+platforms = ["linux-64"]
+version = "0.1.0"
+description = "Builds llama.cpp against the SYSTEM CUDA toolkit (12.4 on 970w, 12.6 on 1050n). No conda CUDA."
+
+[activation.env]
+# ---------------------------------------------------------------------------
+# ONLY line that differs between the two machines:
+#   1050n (Pascal,  2 GB): LLAMA_CUDA_ARCH = "61"
+#   970w  (Maxwell, 4 GB): LLAMA_CUDA_ARCH = "52"
+# ---------------------------------------------------------------------------
+LLAMA_CUDA_ARCH = "61"
+LLAMA_HOST_CXX = "/usr/bin/g++-13"     # works on both: 26.04 needs apt g++-13 (GCC 15.2 too new for CUDA 12.x); 24.04 ships 13.x
+
+# Pin BOTH machines to the SAME commit: the RPC protocol is version-sensitive.
+# 91f6a6c = the commit both machines currently run and have validated.
+LLAMA_COMMIT = "91f6a6c"
+
+# ---- Shared runtime defaults for summarizer.py (both machines) ----
+LLAMA_BASE_URL = "http://127.0.0.1:8196"
+LLAMA_MODEL = "qwen3-4b-instruct-2507"
+# ---- SLOT-BUDGET MATH for the `serve` (--parallel 2) mode: 8,192 tok/slot ----
+# Map call worst case: chunk + ~150 prompt framing + 1,100 gen + one
+# continuation turn (~1,130 re-sent + 1,100 more) => ~7,350 tok at
+# MAP_TOKENS=5000. Comfortably under 8,192. (6,000 left only ~120 tok of
+# margin on continuation — not worth the rare 400.)
+# Reduce batch: 3 x 1,500 + prompt + 1,200 gen ~ 5,900 ok. Final at
+# FINAL_TOKENS=6000: reduce target 3,000 + framing + worst-case 3-part
+# continuation ~ 8,000 ok. NIAH at 12K only fits serve-single.
+MAP_TOKENS = "5000"
+OVERLAP_TOKENS = "150"
+FINAL_TOKENS = "6000"
+NIAH_CTX_TOKENS = "12000"    # ONLY valid against serve-single (16K single slot)
+MAP_WORKERS = "2"            # pairs with --parallel 2 on serve
+SUMMDB = "summaries.db"
+
+[tasks]
+# Clone, then pin: run `pixi run clone && pixi run pin && pixi run build` on EACH machine.
+clone = "git clone --depth 1 https://github.com/ggml-org/llama.cpp llama.cpp-src"
+pin = "git -C llama.cpp-src fetch --depth 1 origin $LLAMA_COMMIT && git -C llama.cpp-src checkout $LLAMA_COMMIT"
+
+# -j2 caps parallel nvcc jobs (compiler-OOM guard).
+build = "cmake -S llama.cpp-src -B llama.cpp-src/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=$LLAMA_CUDA_ARCH -DCMAKE_CUDA_HOST_COMPILER=$LLAMA_HOST_CXX -DLLAMA_CURL=ON && cmake --build llama.cpp-src/build --config Release -j2"
+
+# --- 970w runtime: RPC listener from the fresh build -----------------------
+# Trailing -c = RPC local tensor cache (see llama.cpp tools/rpc README).
+rpc-listener = "llama.cpp-src/build/bin/ggml-rpc-server --host 0.0.0.0 --port 50052 -c"
+
+# --- 1050n runtimes ----------------------------------------------------------
+# serve: PARALLEL mode for summarize/segment speed (two map calls in flight).
+# --parallel 2 splits -c 16384 into 2 slots x 8,192 tokens (kv_unified=false):
+# any single request must fit in ONE slot. Pair with MAP_TOKENS=5000 /
+# FINAL_TOKENS=6000 / MAP_WORKERS=2 above. Do NOT run `pixi run niah` against
+# this server — the 12K haystack exceeds a slot and gets a 400.
+serve = "llama.cpp-src/build/bin/llama-server -hf bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF:Q4_K_M --host 0.0.0.0 --port 8196 --rpc 10.0.0.2:50052 --device CUDA0,RPC0 --split-mode layer -c 16384 -ctk q8_0 -ctv q8_0 --jinja --load-mode dio --fit on --fit-target 256,768 --parallel 2"
+
+# serve-single: one 16K slot. Use for the NIAH gate, or if you prefer the
+# simplest known-good configuration for everything.
+serve-single = "llama.cpp-src/build/bin/llama-server -hf bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF:Q4_K_M --host 0.0.0.0 --port 8196 --rpc 10.0.0.2:50052 --device CUDA0,RPC0 --split-mode layer -c 16384 -ctk q8_0 -ctv q8_0 --jinja --load-mode dio --fit on --fit-target 256,768"
+
+# A/B fallback: previous Granite config (single slot; NIAH_CTX_TOKENS=7000
+# below keeps the 8K-slot haystack request under -c 8192).
+serve-granite = "llama.cpp-src/build/bin/llama-server -hf ibm-granite/granite-4.0-h-micro-GGUF:Q8_0 --host 0.0.0.0 --port 8196 --rpc 10.0.0.2:50052 --device CUDA0,RPC0 --split-mode layer -c 8192 --jinja --load-mode dio --fit on --fit-target 256,768"
+
+# --- summarizer.py entry points (inherit [activation.env]) --------------
+# --kg-out auto: KG is always persisted in summaries.db; additionally writes
+# <stem>.kg.graphml (or .kg.json without networkx). Extra CLI args after the
+# task name are appended: `pixi run summarize INPUT1.pdf` still works.
+summarize = "python summarizer.py summarize --kg-out auto"
+segment = "python summarizer.py segment --kg-out auto"
+reextract-kg = "python summarizer.py reextract-kg"
+export-kg = "python summarizer.py export-kg"
+# Acceptance gate: run ONLY against serve-single (12K haystack needs the
+# full 16K slot). Against the parallel server a 400 arrives immediately
+# (and v2.7 now fails fast on it instead of retrying).
+niah = "python summarizer.py niah"
+niah-granite = { cmd = "python summarizer.py niah", env = { LLAMA_MODEL = "granite-4.0-h-micro", NIAH_CTX_TOKENS = "7000" } }
+runs = "python summarizer.py runs"
+compare = "python summarizer.py compare"
+
+[dependencies]
+python = ">=3.11"
+pymupdf = ">=1.24"
+requests = ">=2.31"
+tqdm = ">=4.66"
+rapidfuzz = ">=3.6"   # fast fuzzy title matching for agenda segmentation (difflib fallback if absent)
+networkx = ">=3.0"    # GraphML KG export for NetworkX/Cytoscape/Gephi (JSON fallback if absent)
+cmake = ">=3.24"
+ninja = "*"
+git = "*"
