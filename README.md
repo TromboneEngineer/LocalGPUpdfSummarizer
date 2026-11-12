@@ -13,7 +13,7 @@ No GPU is technically required, thanks to CPU offloading handled by `llama.cpp`.
 To run locally, the `[tasks]` section of `pixi.toml` allows for several `llama.cpp` building commands. Assuming a 2 computer configuration with an Ethernet connection specifically featuring a GTX 970 GPU and a GTX 1050 notebook GPU, a singular commit/version of `llama.cpp` must be stated (under `LLAMA_COMMIT` in `pixi.toml`). The already chosen commit can be tested, or a newer version is likely to be supported as well. The following command sequence is recommended (at least for similar or identical hardware as stated above):
 
 ```
-git clone https://github.com/TromboneEngineer/LocalGPUpdfSummarizer
+git clone https://github.com/TromboneEngineer/LocalGPUpdfSummarizer.git
 cd LocalGPUpdfSummarizer/
 pixi run clone
 pixi run pin
